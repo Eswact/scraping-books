@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const baseUrl = 'https://www.kitapyurdu.com/index.php?route=product/category&filter_category_all=true&path=1&filter_in_stock=0&sort=purchased_365&order=DESC&limit=100&page=';
-const outputDir = 'output/books.json';
+const outputPath = 'output/books.json';
 const defaultBatchSize = 5;
 
 function randomizeDelay(min, max) {
@@ -13,16 +13,16 @@ function randomizeDelay(min, max) {
 
 async function getTotalPages() {
     const response = await axios.get(baseUrl + '1');
-    const html = response.data;
-    const $ = cheerio.load(html);
-    const totalPages = parseInt($('.pagination .results').text().trim().split('(')[1].split(' ')[0]);
-    return totalPages;
+    const $ = cheerio.load(response.data);
+    const text = $('.pagination .results').text().trim();
+    const match = text.match(/\((\d+)\s/);
+    if (!match) throw new Error('Could not parse total pages from pagination');
+    return parseInt(match[1]);
 }
 
 async function scrapePage(pageNumber) {
     const response = await axios.get(baseUrl + pageNumber);
-    const html = response.data;
-    const $ = cheerio.load(html);
+    const $ = cheerio.load(response.data);
 
     let books = [];
 
@@ -44,9 +44,10 @@ async function scrapePage(pageNumber) {
                     if (!language) language = part;
                 }
             });
-    
-            if (mainParts[mainParts.length - 1].length >= 10 && /^\d{4}-\d{2}-\d{2}$/.test(mainParts[mainParts.length - 1].slice(-10))) {
-                publishDate = mainParts[mainParts.length - 1].slice(-10);
+
+            const lastPart = mainParts[mainParts.length - 1];
+            if (lastPart && lastPart.length >= 10 && /^\d{4}-\d{2}-\d{2}$/.test(lastPart.slice(-10))) {
+                publishDate = lastPart.slice(-10);
             }
         }
 
@@ -75,16 +76,14 @@ async function scrapePage(pageNumber) {
 }
 
 async function getBooks(totalPages) {
-    fs.mkdirSync(path.dirname(outputDir), { recursive: true });
-    fs.mkdirSync(path.dirname('output/booksWithoutDetails.json'), { recursive: true });
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
     let allBooks = [];
 
-    const batchSize = defaultBatchSize || 5;
-    for (let i = 1; i <= totalPages; i += batchSize) {
+    for (let i = 1; i <= totalPages; i += defaultBatchSize) {
         const batchPages = [];
 
-        for (let j = i; j < i + batchSize && j <= totalPages; j++) {
+        for (let j = i; j < i + defaultBatchSize && j <= totalPages; j++) {
             batchPages.push(scrapePage(j));
         }
 
@@ -94,10 +93,10 @@ async function getBooks(totalPages) {
             allBooks.push(...result.books);
         });
 
-        fs.writeFileSync(outputDir, JSON.stringify(allBooks, null, 2));
+        fs.writeFileSync(outputPath, JSON.stringify(allBooks, null, 2));
 
-        console.log(`[${Math.min(i + batchSize - 1, totalPages)}/${totalPages}] scraping...`);
-        
+        console.log(`[${Math.min(i + defaultBatchSize - 1, totalPages)}/${totalPages}] scraping...`);
+
         await new Promise(resolve => setTimeout(resolve, randomizeDelay(250, 500)));
     }
 
@@ -105,7 +104,12 @@ async function getBooks(totalPages) {
 }
 
 (async () => {
-    const totalPages = await getTotalPages();
-    console.log(`Total pages: ${totalPages}`);
-    await getBooks(totalPages);
+    try {
+        const totalPages = await getTotalPages();
+        console.log(`Total pages: ${totalPages}`);
+        await getBooks(totalPages);
+    } catch (err) {
+        console.error('Scraper failed:', err.message);
+        process.exit(1);
+    }
 })();
